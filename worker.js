@@ -3,7 +3,7 @@
 // We must detect this and load the actual engine glue script instead of running our wrapper logic.
 if (typeof self !== 'undefined' && self.name && (self.name.indexOf('pthread') !== -1 || self.name.indexOf('wasm-worker') !== -1)) {
     console.log('Worker: Sub-worker (pthread) detected. Loading engine glue script...');
-    importScripts('https://github.com/rysupaudio-lab/stem-separator-assets/releases/download/v1.0.1/demucs_onnx_simd.js');
+    importScripts('https://rysupaudio-lab.github.io/stem-separator-assets/demucs_onnx_simd.js');
     // Emscripten will take over from here.
 }
 
