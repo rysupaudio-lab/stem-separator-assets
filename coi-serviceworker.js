@@ -1,4 +1,4 @@
-/*! coi-serviceworker v0.1.7 - Guido Zuidhof, licensed under MIT */
+/*! coi-serviceworker v0.1.7 - Modified for cross-origin asset loading */
 let coepCredentialless = true;
 if (typeof window === 'undefined') {
     self.addEventListener("install", () => self.skipWaiting());
@@ -19,6 +19,15 @@ if (typeof window === 'undefined') {
     self.addEventListener("fetch", function (event) {
         const r = event.request;
         if (r.cache === "only-if-cached" && r.mode !== "same-origin") {
+            return;
+        }
+
+        // Only modify same-origin responses to avoid breaking cross-origin fetches
+        const requestURL = new URL(r.url);
+        const isSameOrigin = requestURL.origin === self.location.origin;
+
+        if (!isSameOrigin) {
+            // Pass through cross-origin requests without modification
             return;
         }
 
