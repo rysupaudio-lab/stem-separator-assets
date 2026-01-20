@@ -519,9 +519,9 @@
                     <span class="tab-icon">🎛️</span>
                     Splitter
                 </button>
-                <button class="tab disabled" data-tab="vocals">
+                <button class="tab" data-tab="vocals">
                     <span class="tab-icon">🎤</span>
-                    Vocals<span class="coming-soon">Soon</span>
+                    Vocals
                 </button>
                 <button class="tab disabled" data-tab="dereverb">
                     <span class="tab-icon">🔊</span>
@@ -620,10 +620,72 @@
 
             <!-- Vocals Tab -->
             <div class="tab-content" id="vocals-content">
-                <div style="text-align: center; padding: 40px 20px; color: #94a3b8;">
-                    <div style="font-size: 48px; margin-bottom: 16px;">🎤</div>
-                    <h3 style="color: #fff; margin-bottom: 8px;">Vocal Isolation Coming Soon</h3>
-                    <p style="font-size: 14px;">MDX-Net model for superior vocal extraction</p>
+                <div class="model-selector">
+                    <label>AI Model</label>
+                    <select id="vocalsModelSelect">
+                        <option value="mdxnet">MDX-Net Main 438 (Best quality)</option>
+                    </select>
+                </div>
+
+                <div class="upload-area" id="vocalsUploadArea">
+                    <div class="upload-icon">🎤</div>
+                    <p class="upload-text"><strong>Click to upload</strong> or drag and drop</p>
+                    <p class="upload-text" style="font-size: 12px; margin-top: 8px;">MP3 or WAV (max 50MB)</p>
+                </div>
+                <input type="file" id="vocalsFileInput" accept=".mp3,.wav,audio/mpeg,audio/wav">
+
+                <div class="file-info" id="vocalsFileInfo">
+                    <div class="file-icon">🎵</div>
+                    <div class="file-details">
+                        <div class="file-name" id="vocalsFileName">song.mp3</div>
+                        <div class="file-size" id="vocalsFileSize">4.2 MB</div>
+                    </div>
+                    <button class="remove-file" id="vocalsRemoveFile">✕</button>
+                </div>
+
+                <button class="btn-primary" id="vocalsProcessBtn" disabled>
+                    <span id="vocalsBtnText">Extract Vocals</span>
+                </button>
+
+                <div class="progress-section" id="vocalsProgressSection">
+                    <div class="progress-header">
+                        <span class="progress-label" id="vocalsProgressLabel">Processing...</span>
+                        <span class="progress-percent" id="vocalsProgressPercent">0%</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="vocalsProgressFill"></div>
+                    </div>
+                    <p class="status-message" id="vocalsStatusMessage">Preparing...</p>
+                </div>
+
+                <div class="stems-section" id="vocalsStemsSection">
+                    <h3 class="stems-header">✨ Separation Complete!</h3>
+                    <div class="stems-grid" style="grid-template-columns: 1fr 1fr;">
+                        <div class="stem-card">
+                            <div class="stem-icon vocals">🎤</div>
+                            <div class="stem-name">Vocals</div>
+                            <div class="stem-actions">
+                                <button class="stem-btn play" data-stem="vocals-vocal">▶</button>
+                                <button class="stem-btn download" data-stem="vocals-vocal">⬇</button>
+                            </div>
+                            <div class="audio-player" id="player-vocals-vocal"></div>
+                        </div>
+                        <div class="stem-card">
+                            <div class="stem-icon other">🎹</div>
+                            <div class="stem-name">Instrumental</div>
+                            <div class="stem-actions">
+                                <button class="stem-btn play" data-stem="vocals-inst">▶</button>
+                                <button class="stem-btn download" data-stem="vocals-inst">⬇</button>
+                            </div>
+                            <div class="audio-player" id="player-vocals-inst"></div>
+                        </div>
+                    </div>
+                    <button class="download-all" id="vocalsDownloadAll">📦 Download Both (ZIP)</button>
+                </div>
+
+                <div class="info-box">
+                    <strong>🔒 100% Private</strong>
+                    All processing happens in your browser. Your audio never leaves your device.
                 </div>
             </div>
 
@@ -646,6 +708,7 @@
     <!-- Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.all.min.js"></script>
     <script src="demucs-web.js"></script>
+    <script src="mdxnet-processor.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
     <script>
@@ -889,6 +952,162 @@
                 }
                 return new Blob([buf], { type: 'audio/wav' });
             }
+
+            // ==================== VOCALS TAB ====================
+            const MDXNET_MODEL_URL = 'https://huggingface.co/Eddycrack864/UVR5-MDX-NET-VIP-MODELS/resolve/main/UVR-MDX-NET_Main_438.onnx';
+
+            let vocalsSelectedFile = null;
+            let mdxProcessor = null;
+            let vocalsStems = {};
+            let vocalsStemUrls = {};
+
+            // DOM Elements for Vocals
+            const vocalsUploadArea = document.getElementById('vocalsUploadArea');
+            const vocalsFileInput = document.getElementById('vocalsFileInput');
+            const vocalsFileInfo = document.getElementById('vocalsFileInfo');
+            const vocalsFileName = document.getElementById('vocalsFileName');
+            const vocalsFileSize = document.getElementById('vocalsFileSize');
+            const vocalsRemoveFile = document.getElementById('vocalsRemoveFile');
+            const vocalsProcessBtn = document.getElementById('vocalsProcessBtn');
+            const vocalsBtnText = document.getElementById('vocalsBtnText');
+            const vocalsProgressSection = document.getElementById('vocalsProgressSection');
+            const vocalsProgressLabel = document.getElementById('vocalsProgressLabel');
+            const vocalsProgressPercent = document.getElementById('vocalsProgressPercent');
+            const vocalsProgressFill = document.getElementById('vocalsProgressFill');
+            const vocalsStatusMessage = document.getElementById('vocalsStatusMessage');
+            const vocalsStemsSection = document.getElementById('vocalsStemsSection');
+            const vocalsDownloadAll = document.getElementById('vocalsDownloadAll');
+
+            // Vocals file handling
+            vocalsUploadArea.addEventListener('click', () => vocalsFileInput.click());
+            vocalsUploadArea.addEventListener('dragover', e => { e.preventDefault(); vocalsUploadArea.style.borderColor = '#f093fb'; });
+            vocalsUploadArea.addEventListener('dragleave', () => { vocalsUploadArea.style.borderColor = 'rgba(255,255,255,0.2)'; });
+            vocalsUploadArea.addEventListener('drop', e => {
+                e.preventDefault();
+                vocalsUploadArea.style.borderColor = 'rgba(255,255,255,0.2)';
+                if (e.dataTransfer.files.length) handleVocalsFile(e.dataTransfer.files[0]);
+            });
+            vocalsFileInput.addEventListener('change', e => { if (e.target.files.length) handleVocalsFile(e.target.files[0]); });
+            vocalsRemoveFile.addEventListener('click', clearVocalsFile);
+
+            function handleVocalsFile(file) {
+                if (file.size > MAX_FILE_SIZE) { alert('File too large (max 50MB)'); return; }
+                vocalsSelectedFile = file;
+                vocalsFileName.textContent = file.name;
+                vocalsFileSize.textContent = (file.size / 1024 / 1024).toFixed(1) + ' MB';
+                vocalsUploadArea.classList.add('has-file');
+                vocalsFileInfo.classList.add('visible');
+                vocalsProcessBtn.disabled = false;
+                vocalsStemsSection.classList.remove('visible');
+                cleanupVocalsUrls();
+            }
+
+            function clearVocalsFile() {
+                vocalsSelectedFile = null;
+                vocalsFileInput.value = '';
+                vocalsUploadArea.classList.remove('has-file');
+                vocalsFileInfo.classList.remove('visible');
+                vocalsProcessBtn.disabled = true;
+                vocalsStemsSection.classList.remove('visible');
+                cleanupVocalsUrls();
+            }
+
+            function cleanupVocalsUrls() {
+                Object.values(vocalsStemUrls).forEach(url => URL.revokeObjectURL(url));
+                vocalsStemUrls = {};
+                vocalsStems = {};
+            }
+
+            function updateVocalsStatus(msg) {
+                vocalsStatusMessage.textContent = msg;
+                vocalsProgressLabel.textContent = 'Processing...';
+            }
+
+            // Vocals processing
+            vocalsProcessBtn.addEventListener('click', startVocalsProcessing);
+
+            async function startVocalsProcessing() {
+                if (!vocalsSelectedFile) return;
+                vocalsProcessBtn.disabled = true;
+                vocalsBtnText.innerHTML = '<div class="spinner"></div> Processing...';
+                vocalsProgressSection.classList.add('visible');
+                vocalsProgressFill.style.width = '0%';
+                vocalsProgressPercent.textContent = '0%';
+
+                try {
+                    updateVocalsStatus('Decoding audio...');
+                    const audioData = await decodeAudioFile(vocalsSelectedFile);
+
+                    if (audioData.duration > 600) throw new Error('Song too long (max 10 min)');
+
+                    if (!mdxProcessor) {
+                        updateVocalsStatus('Downloading MDX-Net model (67MB)...');
+                        mdxProcessor = new MDXNetProcessor({
+                            ort: ort,
+                            onDownloadProgress: (loaded, total) => {
+                                const pct = (loaded / total) * 100;
+                                vocalsProgressFill.style.width = pct + '%';
+                                vocalsProgressPercent.textContent = Math.round(pct) + '%';
+                                updateVocalsStatus(`Downloading: ${(loaded / 1024 / 1024).toFixed(1)}MB / ${(total / 1024 / 1024).toFixed(1)}MB`);
+                            },
+                            onProgress: (info) => {
+                                const pct = info.progress * 100;
+                                vocalsProgressFill.style.width = pct + '%';
+                                vocalsProgressPercent.textContent = Math.round(pct) + '%';
+                                updateVocalsStatus(`Separating: segment ${info.currentSegment}/${info.totalSegments}`);
+                            }
+                        });
+                        await mdxProcessor.loadModel(MDXNET_MODEL_URL);
+                    }
+
+                    vocalsProgressFill.style.width = '0%';
+                    updateVocalsStatus('Extracting vocals...');
+                    const result = await mdxProcessor.separate(audioData.left, audioData.right);
+
+                    vocalsStems = {
+                        'vocals-vocal': { left: result.vocals.left, right: result.vocals.right, sampleRate: 44100 },
+                        'vocals-inst': { left: result.instrumental.left, right: result.instrumental.right, sampleRate: 44100 }
+                    };
+
+                    // Create audio players
+                    Object.entries(vocalsStems).forEach(([name, data]) => {
+                        const blob = createWavBlob(data.left, data.right, 44100);
+                        vocalsStemUrls[name] = URL.createObjectURL(blob);
+                        const playerDiv = document.getElementById(`player-${name}`);
+                        if (playerDiv) {
+                            playerDiv.innerHTML = `<audio controls src="${vocalsStemUrls[name]}"></audio>`;
+                        }
+                    });
+
+                    updateVocalsStatus('Complete!');
+                    vocalsProgressFill.style.width = '100%';
+                    vocalsProgressPercent.textContent = '100%';
+
+                    setTimeout(() => {
+                        vocalsProgressSection.classList.remove('visible');
+                        vocalsStemsSection.classList.add('visible');
+                        vocalsProcessBtn.disabled = false;
+                        vocalsBtnText.textContent = 'Extract Again';
+                    }, 1000);
+
+                } catch (err) {
+                    console.error(err);
+                    updateVocalsStatus('Error: ' + err.message);
+                    vocalsProcessBtn.disabled = false;
+                    vocalsBtnText.textContent = 'Try Again';
+                }
+            }
+
+            // Vocals download all
+            vocalsDownloadAll.addEventListener('click', async () => {
+                if (!Object.keys(vocalsStems).length) return;
+                const zip = new JSZip();
+                const baseName = vocalsSelectedFile ? vocalsSelectedFile.name.replace(/\.[^/.]+$/, '') : 'track';
+                zip.file(`${baseName}_vocals.wav`, createWavBlob(vocalsStems['vocals-vocal'].left, vocalsStems['vocals-vocal'].right, 44100));
+                zip.file(`${baseName}_instrumental.wav`, createWavBlob(vocalsStems['vocals-inst'].left, vocalsStems['vocals-inst'].right, 44100));
+                const blob = await zip.generateAsync({ type: 'blob' });
+                downloadUrl(URL.createObjectURL(blob), `${baseName}_vocals_separated.zip`);
+            });
         });
     </script>
 </body>
