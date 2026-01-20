@@ -1023,7 +1023,10 @@
                 vocalsProgressLabel.textContent = 'Processing...';
             }
 
-            // Vocals processing
+            // Vocals processing with Web Worker
+            let mdxWorker = null;
+            let mdxWorkerReady = false;
+            
             vocalsProcessBtn.addEventListener('click', startVocalsProcessing);
 
             async function startVocalsProcessing() {
@@ -1040,33 +1043,45 @@
 
                     if (audioData.duration > 600) throw new Error('Song too long (max 10 min)');
 
-                    if (!mdxProcessor) {
-                        updateVocalsStatus('Downloading MDX-Net model (67MB)...');
-                        mdxProcessor = new MDXNetProcessor({
-                            ort: ort,
-                            onDownloadProgress: (loaded, total) => {
-                                const pct = (loaded / total) * 100;
-                                vocalsProgressFill.style.width = pct + '%';
-                                vocalsProgressPercent.textContent = Math.round(pct) + '%';
-                                updateVocalsStatus(`Downloading: ${(loaded / 1024 / 1024).toFixed(1)}MB / ${(total / 1024 / 1024).toFixed(1)}MB`);
-                            },
-                            onProgress: (info) => {
-                                const pct = info.progress * 100;
-                                vocalsProgressFill.style.width = pct + '%';
-                                vocalsProgressPercent.textContent = Math.round(pct) + '%';
-                                updateVocalsStatus(`Separating: segment ${info.currentSegment}/${info.totalSegments}`);
-                            }
+                    // Initialize worker if needed
+                    if (!mdxWorker) {
+                        mdxWorker = new Worker('mdxnet-worker.js');
+                        
+                        // Set up message handler
+                        mdxWorker.onmessage = handleWorkerMessage;
+                        
+                        // Load model in worker
+                        updateVocalsStatus('Loading MDX-Net model (67MB)...');
+                        await new Promise((resolve, reject) => {
+                            mdxWorker._loadResolve = resolve;
+                            mdxWorker._loadReject = reject;
+                            mdxWorker.postMessage({ 
+                                type: 'loadModel', 
+                                data: { modelUrl: MDXNET_MODEL_URL }
+                            });
                         });
-                        await mdxProcessor.loadModel(MDXNET_MODEL_URL);
+                        mdxWorkerReady = true;
                     }
 
                     vocalsProgressFill.style.width = '0%';
-                    updateVocalsStatus('Extracting vocals...');
-                    const result = await mdxProcessor.separate(audioData.left, audioData.right);
+                    updateVocalsStatus('Extracting vocals (this may take a moment)...');
+                    
+                    // Run separation in worker
+                    const result = await new Promise((resolve, reject) => {
+                        mdxWorker._separateResolve = resolve;
+                        mdxWorker._separateReject = reject;
+                        mdxWorker.postMessage({
+                            type: 'separate',
+                            data: { 
+                                left: Array.from(audioData.left), 
+                                right: Array.from(audioData.right) 
+                            }
+                        });
+                    });
 
                     vocalsStems = {
-                        'vocals-vocal': { left: result.vocals.left, right: result.vocals.right, sampleRate: 44100 },
-                        'vocals-inst': { left: result.instrumental.left, right: result.instrumental.right, sampleRate: 44100 }
+                        'vocals-vocal': { left: new Float32Array(result.vocals.left), right: new Float32Array(result.vocals.right), sampleRate: 44100 },
+                        'vocals-inst': { left: new Float32Array(result.instrumental.left), right: new Float32Array(result.instrumental.right), sampleRate: 44100 }
                     };
 
                     // Create audio players
@@ -1095,6 +1110,39 @@
                     updateVocalsStatus('Error: ' + err.message);
                     vocalsProcessBtn.disabled = false;
                     vocalsBtnText.textContent = 'Try Again';
+                }
+            }
+            
+            function handleWorkerMessage(e) {
+                const { type, ...data } = e.data;
+                
+                switch (type) {
+                    case 'modelLoaded':
+                        if (mdxWorker._loadResolve) mdxWorker._loadResolve();
+                        break;
+                    case 'downloadProgress':
+                        const pct = (data.loaded / data.total) * 100;
+                        vocalsProgressFill.style.width = pct + '%';
+                        vocalsProgressPercent.textContent = Math.round(pct) + '%';
+                        updateVocalsStatus(`Downloading: ${(data.loaded / 1024 / 1024).toFixed(1)}MB / ${(data.total / 1024 / 1024).toFixed(1)}MB`);
+                        break;
+                    case 'status':
+                        updateVocalsStatus(data.message);
+                        break;
+                    case 'progress':
+                        const progPct = data.progress * 100;
+                        vocalsProgressFill.style.width = progPct + '%';
+                        vocalsProgressPercent.textContent = Math.round(progPct) + '%';
+                        updateVocalsStatus(`Separating: chunk ${data.current}/${data.total}`);
+                        break;
+                    case 'complete':
+                        if (mdxWorker._separateResolve) mdxWorker._separateResolve(data.result);
+                        break;
+                    case 'error':
+                        console.error('Worker error:', data.error);
+                        if (mdxWorker._loadReject) mdxWorker._loadReject(new Error(data.error));
+                        if (mdxWorker._separateReject) mdxWorker._separateReject(new Error(data.error));
+                        break;
                 }
             }
 
