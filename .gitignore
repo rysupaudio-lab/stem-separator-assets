@@ -1,2 +1,4 @@
-*.wasm
+# Only exclude the large model file (80MB)
+# .wasm is small enough (1.1MB) for GitHub Pages
 *.bin
+temp-repo/
