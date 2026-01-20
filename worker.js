@@ -98,8 +98,7 @@ self.onmessage = async function (e) {
             demucsEngineInstance.HEAPU8.set(new Uint8Array(modelBytes), modelPtr);
             const res = demucsEngineInstance._modelInit(modelPtr, modelBytes.byteLength);
 
-            // Free the original pointer if we used manual alignment
-            demucsEngineInstance._free(modelPtrRaw);
+            // NOTE: Don't free modelPtrRaw here - the model keeps this memory for its lifetime
 
             if (res !== 0) throw new Error('Engine initialization failed code ' + res);
 
