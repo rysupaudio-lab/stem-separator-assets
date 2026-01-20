@@ -50,7 +50,7 @@ if (typeof window === 'undefined') {
 
 } else {
     (async function () {
-        if (window.crossOriginIsolated !== false) return;
+        if (window.crossOriginIsolated === true) return;
 
         const registration = await navigator.serviceWorker.register(window.document.currentScript.src).catch(e => console.error("COI: ", e));
         if (registration) {
