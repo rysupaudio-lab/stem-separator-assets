@@ -6,6 +6,9 @@
 // Import ONNX Runtime
 importScripts('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.all.min.js');
 
+// Configure WASM paths
+ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/';
+
 const MDX_CONSTANTS = {
     SAMPLE_RATE: 44100,
     N_FFT: 6144,
