@@ -700,8 +700,15 @@
             const badgeText = document.getElementById('badgeText');
 
             function updateSecurityUI() {
+                console.log('=== SIMD Diagnostics ===');
+                console.log('crossOriginIsolated:', window.crossOriginIsolated);
+                console.log('isSecureContext:', window.isSecureContext);
+                console.log('SharedArrayBuffer available:', typeof SharedArrayBuffer !== 'undefined');
+
                 if (window.crossOriginIsolated) {
-                    const hasSimd = !!(typeof WebAssembly === 'object' && WebAssembly.validate && WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 26, 11])));
+                    const simdBytes = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 26, 11]);
+                    const hasSimd = !!(typeof WebAssembly === 'object' && WebAssembly.validate && WebAssembly.validate(simdBytes));
+                    console.log('SIMD validation result:', hasSimd);
                     if (hasSimd) {
                         securityBadge.className = 'security-badge isolated';
                         badgeText.textContent = 'High Performance Mode (SIMD)';
@@ -712,10 +719,16 @@
                         securityBadge.title = 'SIMD validation failed. Running in compatibility mode.';
                     }
                 } else {
+                    console.log('NOT cross-origin isolated - checking service worker...');
+                    navigator.serviceWorker.getRegistrations().then(regs => {
+                        console.log('Service Worker registrations:', regs.length);
+                        regs.forEach((reg, i) => console.log('  SW', i, ':', reg.scope, reg.active ? 'ACTIVE' : 'inactive'));
+                    });
                     securityBadge.className = 'security-badge not-isolated';
-                    badgeText.textContent = 'Refresh Required (Standard Mode)';
-                    securityBadge.title = 'Secure context missing. Refresh page once to enable High Performance (SIMD).';
+                    badgeText.textContent = 'Standard Mode (COI Failed)';
+                    securityBadge.title = 'Cross-origin isolation failed. Check console for details.';
                 }
+                console.log('========================');
             }
             updateSecurityUI();
 
