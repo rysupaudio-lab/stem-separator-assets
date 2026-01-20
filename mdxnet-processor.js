@@ -2,16 +2,20 @@
  * MDX-Net Processor for Browser
  * Uses ONNX Runtime Web to run MDX-Net vocal separation
  * Based on UVR (Ultimate Vocal Remover) implementation
+ * 
+ * Model expects input shape: [batch, 4, 3072, time_frames]
+ * - 4 channels: Left Real, Left Imag, Right Real, Right Imag
+ * - 3072 frequency bins (from n_fft=6144)
  */
 
-// STFT/iSTFT implementation for MDX-Net
 const MDX_CONSTANTS = {
     SAMPLE_RATE: 44100,
-    N_FFT: 6144,           // MDX-Net default FFT size
-    HOP_LENGTH: 1024,      // Hop length
-    DIM_F: 2048,           // Frequency dimension
-    DIM_T: 256,            // Time dimension (segment length)
-    OVERLAP: 0.25          // Overlap for chunking
+    N_FFT: 6144,           // MDX-Net FFT size
+    HOP_LENGTH: 1024,      // Hop length  
+    DIM_F: 3072,           // Frequency dimension (n_fft/2)
+    DIM_C: 4,              // 4 channels: L_real, L_imag, R_real, R_imag
+    CHUNK_SIZE: 256,       // Time frames per chunk
+    OVERLAP: 0.5           // Overlap for chunking
 };
 
 class MDXNetProcessor {
@@ -54,7 +58,9 @@ class MDXNetProcessor {
             graphOptimizationLevel: 'all'
         });
 
-        console.log('MDX-Net model loaded. Input names:', this.session.inputNames, 'Output names:', this.session.outputNames);
+        console.log('MDX-Net model loaded.');
+        console.log('Input names:', this.session.inputNames);
+        console.log('Output names:', this.session.outputNames);
     }
 
     /**
@@ -66,133 +72,147 @@ class MDXNetProcessor {
     async separate(leftChannel, rightChannel) {
         if (!this.session) throw new Error('Model not loaded');
 
+        const { N_FFT, HOP_LENGTH, DIM_F, DIM_C, CHUNK_SIZE, OVERLAP } = MDX_CONSTANTS;
         const numSamples = leftChannel.length;
-        const segmentSamples = MDX_CONSTANTS.DIM_T * MDX_CONSTANTS.HOP_LENGTH;
-        const overlap = Math.floor(segmentSamples * MDX_CONSTANTS.OVERLAP);
-        const step = segmentSamples - overlap;
 
-        // Calculate number of segments
-        const numSegments = Math.ceil((numSamples - overlap) / step);
+        // Compute STFT for both channels
+        console.log('Computing STFT...');
+        const stftLeft = this.stft(leftChannel);
+        const stftRight = this.stft(rightChannel);
 
-        // Output arrays
-        const vocalsLeft = new Float32Array(numSamples);
-        const vocalsRight = new Float32Array(numSamples);
-        const instLeft = new Float32Array(numSamples);
-        const instRight = new Float32Array(numSamples);
-        const weights = new Float32Array(numSamples);
+        const numFrames = stftLeft.numFrames;
+        const chunkStep = Math.floor(CHUNK_SIZE * (1 - OVERLAP));
+        const numChunks = Math.ceil((numFrames - CHUNK_SIZE) / chunkStep) + 1;
 
-        for (let i = 0; i < numSegments; i++) {
-            const start = i * step;
-            const end = Math.min(start + segmentSamples, numSamples);
+        // Output accumulators
+        const vocalMaskReal = new Float32Array(numFrames * DIM_F * 2);
+        const vocalMaskImag = new Float32Array(numFrames * DIM_F * 2);
+        const weights = new Float32Array(numFrames);
 
-            // Extract segment
-            let segmentLeft = leftChannel.slice(start, end);
-            let segmentRight = rightChannel.slice(start, end);
+        console.log(`Processing ${numChunks} chunks...`);
 
-            // Pad if necessary
-            if (segmentLeft.length < segmentSamples) {
-                const padding = segmentSamples - segmentLeft.length;
-                const paddedLeft = new Float32Array(segmentSamples);
-                const paddedRight = new Float32Array(segmentSamples);
-                paddedLeft.set(segmentLeft);
-                paddedRight.set(segmentRight);
-                segmentLeft = paddedLeft;
-                segmentRight = paddedRight;
-            }
+        for (let c = 0; c < numChunks; c++) {
+            const startFrame = c * chunkStep;
+            const endFrame = Math.min(startFrame + CHUNK_SIZE, numFrames);
+            const actualChunkSize = endFrame - startFrame;
 
-            // Compute STFT
-            const stftLeft = this.stft(segmentLeft);
-            const stftRight = this.stft(segmentRight);
+            // Prepare input tensor: [1, 4, DIM_F, CHUNK_SIZE]
+            // Channel 0: Left Real
+            // Channel 1: Left Imag
+            // Channel 2: Right Real
+            // Channel 3: Right Imag
+            const inputData = new Float32Array(1 * DIM_C * DIM_F * CHUNK_SIZE);
 
-            // Prepare input tensor [batch, channels, freq, time]
-            // MDX-Net expects magnitude spectrogram
-            const inputData = new Float32Array(1 * 2 * MDX_CONSTANTS.DIM_F * MDX_CONSTANTS.DIM_T);
+            for (let t = 0; t < actualChunkSize; t++) {
+                const frameIdx = startFrame + t;
+                for (let f = 0; f < DIM_F; f++) {
+                    const stftIdx = frameIdx * (N_FFT / 2 + 1) + f;
 
-            for (let t = 0; t < MDX_CONSTANTS.DIM_T; t++) {
-                for (let f = 0; f < MDX_CONSTANTS.DIM_F; f++) {
-                    const idx = t * MDX_CONSTANTS.DIM_F + f;
-                    if (idx < stftLeft.magnitude.length) {
-                        // Channel 0 (left)
-                        inputData[0 * MDX_CONSTANTS.DIM_F * MDX_CONSTANTS.DIM_T + f * MDX_CONSTANTS.DIM_T + t] = stftLeft.magnitude[idx];
-                        // Channel 1 (right)
-                        inputData[1 * MDX_CONSTANTS.DIM_F * MDX_CONSTANTS.DIM_T + f * MDX_CONSTANTS.DIM_T + t] = stftRight.magnitude[idx];
-                    }
+                    // Left Real (channel 0)
+                    inputData[0 * DIM_F * CHUNK_SIZE + f * CHUNK_SIZE + t] = stftLeft.real[stftIdx] || 0;
+                    // Left Imag (channel 1)
+                    inputData[1 * DIM_F * CHUNK_SIZE + f * CHUNK_SIZE + t] = stftLeft.imag[stftIdx] || 0;
+                    // Right Real (channel 2)
+                    inputData[2 * DIM_F * CHUNK_SIZE + f * CHUNK_SIZE + t] = stftRight.real[stftIdx] || 0;
+                    // Right Imag (channel 3)
+                    inputData[3 * DIM_F * CHUNK_SIZE + f * CHUNK_SIZE + t] = stftRight.imag[stftIdx] || 0;
                 }
             }
 
             // Run inference
-            const inputTensor = new this.ort.Tensor('float32', inputData, [1, 2, MDX_CONSTANTS.DIM_F, MDX_CONSTANTS.DIM_T]);
+            const inputTensor = new this.ort.Tensor('float32', inputData, [1, DIM_C, DIM_F, CHUNK_SIZE]);
             const feeds = { [this.session.inputNames[0]]: inputTensor };
             const results = await this.session.run(feeds);
             const outputTensor = results[this.session.outputNames[0]];
             const outputData = outputTensor.data;
 
-            // Extract vocal mask and apply to spectrogram
-            const vocalMaskLeft = new Float32Array(stftLeft.magnitude.length);
-            const vocalMaskRight = new Float32Array(stftRight.magnitude.length);
+            // Accumulate output with overlap-add weighting
+            for (let t = 0; t < actualChunkSize; t++) {
+                const frameIdx = startFrame + t;
+                const windowWeight = 0.5 * (1 - Math.cos(2 * Math.PI * t / actualChunkSize));
 
-            for (let t = 0; t < MDX_CONSTANTS.DIM_T; t++) {
-                for (let f = 0; f < MDX_CONSTANTS.DIM_F; f++) {
-                    const idx = t * MDX_CONSTANTS.DIM_F + f;
-                    if (idx < vocalMaskLeft.length) {
-                        vocalMaskLeft[idx] = outputData[0 * MDX_CONSTANTS.DIM_F * MDX_CONSTANTS.DIM_T + f * MDX_CONSTANTS.DIM_T + t] || 0;
-                        vocalMaskRight[idx] = outputData[1 * MDX_CONSTANTS.DIM_F * MDX_CONSTANTS.DIM_T + f * MDX_CONSTANTS.DIM_T + t] || 0;
-                    }
+                for (let f = 0; f < DIM_F; f++) {
+                    // Output is also [1, 4, DIM_F, CHUNK_SIZE]
+                    const leftRealOut = outputData[0 * DIM_F * CHUNK_SIZE + f * CHUNK_SIZE + t] || 0;
+                    const leftImagOut = outputData[1 * DIM_F * CHUNK_SIZE + f * CHUNK_SIZE + t] || 0;
+                    const rightRealOut = outputData[2 * DIM_F * CHUNK_SIZE + f * CHUNK_SIZE + t] || 0;
+                    const rightImagOut = outputData[3 * DIM_F * CHUNK_SIZE + f * CHUNK_SIZE + t] || 0;
+
+                    const outIdx = frameIdx * DIM_F + f;
+                    vocalMaskReal[outIdx * 2] += leftRealOut * windowWeight;
+                    vocalMaskImag[outIdx * 2] += leftImagOut * windowWeight;
+                    vocalMaskReal[outIdx * 2 + 1] += rightRealOut * windowWeight;
+                    vocalMaskImag[outIdx * 2 + 1] += rightImagOut * windowWeight;
                 }
-            }
-
-            // Apply mask to get vocals
-            const vocalStftLeft = {
-                real: stftLeft.real.map((v, i) => v * Math.min(1, Math.max(0, vocalMaskLeft[i]))),
-                imag: stftLeft.imag.map((v, i) => v * Math.min(1, Math.max(0, vocalMaskLeft[i])))
-            };
-            const vocalStftRight = {
-                real: stftRight.real.map((v, i) => v * Math.min(1, Math.max(0, vocalMaskRight[i]))),
-                imag: stftRight.imag.map((v, i) => v * Math.min(1, Math.max(0, vocalMaskRight[i])))
-            };
-
-            // Apply inverse mask to get instrumental
-            const instStftLeft = {
-                real: stftLeft.real.map((v, i) => v * (1 - Math.min(1, Math.max(0, vocalMaskLeft[i])))),
-                imag: stftLeft.imag.map((v, i) => v * (1 - Math.min(1, Math.max(0, vocalMaskLeft[i]))))
-            };
-            const instStftRight = {
-                real: stftRight.real.map((v, i) => v * (1 - Math.min(1, Math.max(0, vocalMaskRight[i])))),
-                imag: stftRight.imag.map((v, i) => v * (1 - Math.min(1, Math.max(0, vocalMaskRight[i]))))
-            };
-
-            // Inverse STFT
-            const vocalSegmentLeft = this.istft(vocalStftLeft, segmentSamples);
-            const vocalSegmentRight = this.istft(vocalStftRight, segmentSamples);
-            const instSegmentLeft = this.istft(instStftLeft, segmentSamples);
-            const instSegmentRight = this.istft(instStftRight, segmentSamples);
-
-            // Overlap-add with Hann window
-            for (let j = 0; j < segmentSamples && start + j < numSamples; j++) {
-                const windowWeight = 0.5 * (1 - Math.cos(2 * Math.PI * j / segmentSamples));
-                vocalsLeft[start + j] += vocalSegmentLeft[j] * windowWeight;
-                vocalsRight[start + j] += vocalSegmentRight[j] * windowWeight;
-                instLeft[start + j] += instSegmentLeft[j] * windowWeight;
-                instRight[start + j] += instSegmentRight[j] * windowWeight;
-                weights[start + j] += windowWeight;
+                weights[frameIdx] += windowWeight;
             }
 
             this.onProgress({
-                progress: (i + 1) / numSegments,
-                currentSegment: i + 1,
-                totalSegments: numSegments
+                progress: (c + 1) / numChunks,
+                currentSegment: c + 1,
+                totalSegments: numChunks
             });
         }
 
-        // Normalize by overlap weights
-        for (let i = 0; i < numSamples; i++) {
-            if (weights[i] > 0) {
-                vocalsLeft[i] /= weights[i];
-                vocalsRight[i] /= weights[i];
-                instLeft[i] /= weights[i];
-                instRight[i] /= weights[i];
+        // Normalize by weights
+        for (let t = 0; t < numFrames; t++) {
+            if (weights[t] > 0) {
+                for (let f = 0; f < DIM_F; f++) {
+                    const idx = t * DIM_F + f;
+                    vocalMaskReal[idx * 2] /= weights[t];
+                    vocalMaskImag[idx * 2] /= weights[t];
+                    vocalMaskReal[idx * 2 + 1] /= weights[t];
+                    vocalMaskImag[idx * 2 + 1] /= weights[t];
+                }
             }
         }
+
+        // Build vocal STFT (model outputs the separated spectrogram directly)
+        const vocalStftLeft = {
+            real: new Float32Array(stftLeft.real.length),
+            imag: new Float32Array(stftLeft.imag.length),
+            numFrames: numFrames,
+            numBins: N_FFT / 2 + 1
+        };
+        const vocalStftRight = {
+            real: new Float32Array(stftRight.real.length),
+            imag: new Float32Array(stftRight.imag.length),
+            numFrames: numFrames,
+            numBins: N_FFT / 2 + 1
+        };
+
+        for (let t = 0; t < numFrames; t++) {
+            for (let f = 0; f < DIM_F && f < vocalStftLeft.numBins; f++) {
+                const stftIdx = t * vocalStftLeft.numBins + f;
+                const maskIdx = t * DIM_F + f;
+
+                vocalStftLeft.real[stftIdx] = vocalMaskReal[maskIdx * 2];
+                vocalStftLeft.imag[stftIdx] = vocalMaskImag[maskIdx * 2];
+                vocalStftRight.real[stftIdx] = vocalMaskReal[maskIdx * 2 + 1];
+                vocalStftRight.imag[stftIdx] = vocalMaskImag[maskIdx * 2 + 1];
+            }
+        }
+
+        // Compute instrumental as original - vocals
+        const instStftLeft = {
+            real: stftLeft.real.map((v, i) => v - vocalStftLeft.real[i]),
+            imag: stftLeft.imag.map((v, i) => v - vocalStftLeft.imag[i]),
+            numFrames: numFrames,
+            numBins: N_FFT / 2 + 1
+        };
+        const instStftRight = {
+            real: stftRight.real.map((v, i) => v - vocalStftRight.real[i]),
+            imag: stftRight.imag.map((v, i) => v - vocalStftRight.imag[i]),
+            numFrames: numFrames,
+            numBins: N_FFT / 2 + 1
+        };
+
+        // Inverse STFT
+        console.log('Computing inverse STFT...');
+        const vocalsLeft = this.istft(vocalStftLeft, numSamples);
+        const vocalsRight = this.istft(vocalStftRight, numSamples);
+        const instLeft = this.istft(instStftLeft, numSamples);
+        const instRight = this.istft(instStftRight, numSamples);
 
         return {
             vocals: { left: vocalsLeft, right: vocalsRight },
@@ -204,28 +224,26 @@ class MDXNetProcessor {
      * Short-Time Fourier Transform
      */
     stft(signal) {
-        const nFft = MDX_CONSTANTS.N_FFT;
-        const hopLength = MDX_CONSTANTS.HOP_LENGTH;
-        const numFrames = Math.ceil(signal.length / hopLength);
-        const numBins = nFft / 2 + 1;
+        const { N_FFT, HOP_LENGTH } = MDX_CONSTANTS;
+        const numFrames = Math.ceil(signal.length / HOP_LENGTH);
+        const numBins = N_FFT / 2 + 1;
 
         const real = new Float32Array(numFrames * numBins);
         const imag = new Float32Array(numFrames * numBins);
-        const magnitude = new Float32Array(numFrames * numBins);
 
         // Hann window
-        const window = new Float32Array(nFft);
-        for (let i = 0; i < nFft; i++) {
-            window[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / nFft));
+        const window = new Float32Array(N_FFT);
+        for (let i = 0; i < N_FFT; i++) {
+            window[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / N_FFT));
         }
 
         for (let frame = 0; frame < numFrames; frame++) {
-            const start = frame * hopLength;
+            const start = frame * HOP_LENGTH;
 
             // Extract windowed frame
-            const frameData = new Float32Array(nFft);
-            for (let i = 0; i < nFft; i++) {
-                const idx = start + i - nFft / 2;
+            const frameData = new Float32Array(N_FFT);
+            for (let i = 0; i < N_FFT; i++) {
+                const idx = start + i - N_FFT / 2;
                 if (idx >= 0 && idx < signal.length) {
                     frameData[i] = signal[idx] * window[i];
                 }
@@ -239,35 +257,32 @@ class MDXNetProcessor {
                 const idx = frame * numBins + bin;
                 real[idx] = fftResult.real[bin];
                 imag[idx] = fftResult.imag[bin];
-                magnitude[idx] = Math.sqrt(fftResult.real[bin] ** 2 + fftResult.imag[bin] ** 2);
             }
         }
 
-        return { real, imag, magnitude, numFrames, numBins };
+        return { real, imag, numFrames, numBins };
     }
 
     /**
      * Inverse Short-Time Fourier Transform
      */
     istft(stft, length) {
-        const nFft = MDX_CONSTANTS.N_FFT;
-        const hopLength = MDX_CONSTANTS.HOP_LENGTH;
-        const numFrames = Math.ceil(length / hopLength);
-        const numBins = nFft / 2 + 1;
+        const { N_FFT, HOP_LENGTH } = MDX_CONSTANTS;
+        const { numFrames, numBins } = stft;
 
         const output = new Float32Array(length);
         const windowSum = new Float32Array(length);
 
         // Hann window
-        const window = new Float32Array(nFft);
-        for (let i = 0; i < nFft; i++) {
-            window[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / nFft));
+        const window = new Float32Array(N_FFT);
+        for (let i = 0; i < N_FFT; i++) {
+            window[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / N_FFT));
         }
 
         for (let frame = 0; frame < numFrames; frame++) {
             // Build full spectrum (mirror for negative frequencies)
-            const fullReal = new Float32Array(nFft);
-            const fullImag = new Float32Array(nFft);
+            const fullReal = new Float32Array(N_FFT);
+            const fullImag = new Float32Array(N_FFT);
 
             for (let bin = 0; bin < numBins; bin++) {
                 const idx = frame * numBins + bin;
@@ -276,8 +291,8 @@ class MDXNetProcessor {
 
                 // Mirror for negative frequencies
                 if (bin > 0 && bin < numBins - 1) {
-                    fullReal[nFft - bin] = stft.real[idx] || 0;
-                    fullImag[nFft - bin] = -(stft.imag[idx] || 0);
+                    fullReal[N_FFT - bin] = stft.real[idx] || 0;
+                    fullImag[N_FFT - bin] = -(stft.imag[idx] || 0);
                 }
             }
 
@@ -285,9 +300,9 @@ class MDXNetProcessor {
             const frameData = this.ifft({ real: fullReal, imag: fullImag });
 
             // Overlap-add
-            const start = frame * hopLength;
-            for (let i = 0; i < nFft; i++) {
-                const idx = start + i - nFft / 2;
+            const start = frame * HOP_LENGTH;
+            for (let i = 0; i < N_FFT; i++) {
+                const idx = start + i - N_FFT / 2;
                 if (idx >= 0 && idx < length) {
                     output[idx] += frameData[i] * window[i];
                     windowSum[idx] += window[i] ** 2;
@@ -306,7 +321,7 @@ class MDXNetProcessor {
     }
 
     /**
-     * Simple FFT implementation (Cooley-Tukey radix-2)
+     * FFT (Cooley-Tukey radix-2)
      */
     fft(signal) {
         const n = signal.length;
@@ -361,20 +376,16 @@ class MDXNetProcessor {
             imag[i] = -spectrum.imag[i];
         }
 
-        // FFT
-        const tempSignal = new Float32Array(n);
-        for (let i = 0; i < n; i++) {
-            tempSignal[i] = real[i];
-        }
-
         // Bit-reversal
+        const tempReal = new Float32Array(n);
+        const tempImag = new Float32Array(n);
         for (let i = 0; i < n; i++) {
             let j = 0, bit = n >> 1;
             for (let k = i; k > 0; k >>= 1, bit >>= 1) {
                 if (k & 1) j |= bit;
             }
-            real[j] = tempSignal[i];
-            imag[j] = -spectrum.imag[i];
+            tempReal[j] = real[i];
+            tempImag[j] = imag[i];
         }
 
         // Cooley-Tukey
@@ -388,21 +399,21 @@ class MDXNetProcessor {
                     const cos = Math.cos(theta);
                     const sin = Math.sin(theta);
 
-                    const re = real[i + j + halfSize] * cos - imag[i + j + halfSize] * sin;
-                    const im = real[i + j + halfSize] * sin + imag[i + j + halfSize] * cos;
+                    const re = tempReal[i + j + halfSize] * cos - tempImag[i + j + halfSize] * sin;
+                    const im = tempReal[i + j + halfSize] * sin + tempImag[i + j + halfSize] * cos;
 
-                    real[i + j + halfSize] = real[i + j] - re;
-                    imag[i + j + halfSize] = imag[i + j] - im;
-                    real[i + j] += re;
-                    imag[i + j] += im;
+                    tempReal[i + j + halfSize] = tempReal[i + j] - re;
+                    tempImag[i + j + halfSize] = tempImag[i + j] - im;
+                    tempReal[i + j] += re;
+                    tempImag[i + j] += im;
                 }
             }
         }
 
-        // Conjugate and normalize
+        // Normalize
         const output = new Float32Array(n);
         for (let i = 0; i < n; i++) {
-            output[i] = real[i] / n;
+            output[i] = tempReal[i] / n;
         }
 
         return output;
