@@ -81,6 +81,11 @@ async function separate(leftChannel, rightChannel) {
     const { N_FFT, HOP_LENGTH, DIM_F, DIM_C, CHUNK_SIZE, OVERLAP } = MDX_CONSTANTS;
     const numSamples = leftChannel.length;
 
+    // Debug: Check input levels
+    let maxInput = 0;
+    for (let i = 0; i < numSamples; i++) maxInput = Math.max(maxInput, Math.abs(leftChannel[i]));
+    console.log('Worker: Max Input Amplitude:', maxInput);
+
     // Pre-compute window
     const window = new Float32Array(N_FFT);
     for (let i = 0; i < N_FFT; i++) {
@@ -92,6 +97,11 @@ async function separate(leftChannel, rightChannel) {
     // Optimized STFT using typed arrays and pre-computed window
     const stftLeft = optimizedSTFT(leftChannel, window);
     const stftRight = optimizedSTFT(rightChannel, window);
+
+    // Debug: Check STFT levels
+    let maxSTFT = 0;
+    for (let i = 0; i < stftLeft.real.length; i++) maxSTFT = Math.max(maxSTFT, Math.abs(stftLeft.real[i]));
+    console.log('Worker: Max STFT Real Value:', maxSTFT);
 
     const numFrames = stftLeft.numFrames;
     const chunkStep = Math.floor(CHUNK_SIZE * (1 - OVERLAP));
@@ -137,6 +147,13 @@ async function separate(leftChannel, rightChannel) {
         const feeds = { [session.inputNames[0]]: inputTensor };
         const results = await session.run(feeds);
         const outputData = results[session.outputNames[0]].data;
+
+        // Debug output data from first chunk
+        if (c === 0) {
+            let maxOut = 0;
+            for (let i = 0; i < outputData.length; i++) maxOut = Math.max(maxOut, Math.abs(outputData[i]));
+            console.log('Worker: Max Model Output Value (First Chunk):', maxOut);
+        }
 
         // Accumulate output
         for (let t = 0; t < actualChunkSize; t++) {
@@ -207,6 +224,8 @@ async function separate(leftChannel, rightChannel) {
     const vocalsRight = optimizedISTFT(vocalStftRight, numSamples, window);
     const instLeft = optimizedISTFT(instStftLeft, numSamples, window);
     const instRight = optimizedISTFT(instStftRight, numSamples, window);
+
+
 
     return {
         vocals: { left: vocalsLeft, right: vocalsRight },
