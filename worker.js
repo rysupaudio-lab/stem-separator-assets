@@ -65,8 +65,15 @@ self.onmessage = async function (e) {
             });
 
             self.postMessage({ type: 'status', message: 'Readying AI model...' });
-            const modelResponse = await fetch(data.modelUrl);
-            if (!modelResponse.ok) throw new Error('Model download failed: ' + modelResponse.status);
+            console.log('Worker: Fetching model from:', data.modelUrl);
+            const modelResponse = await fetch(data.modelUrl, {
+                method: 'GET',
+                mode: 'cors',
+                redirect: 'follow',
+                credentials: 'omit'
+            });
+            console.log('Worker: Model response status:', modelResponse.status, modelResponse.statusText);
+            if (!modelResponse.ok) throw new Error('Model download failed: ' + modelResponse.status + ' ' + modelResponse.statusText);
 
             const modelBytes = await modelResponse.arrayBuffer();
 

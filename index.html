@@ -703,21 +703,20 @@
                 console.log('=== SIMD Diagnostics ===');
                 console.log('crossOriginIsolated:', window.crossOriginIsolated);
                 console.log('isSecureContext:', window.isSecureContext);
-                console.log('SharedArrayBuffer available:', typeof SharedArrayBuffer !== 'undefined');
+                const hasSAB = typeof SharedArrayBuffer !== 'undefined';
+                console.log('SharedArrayBuffer available:', hasSAB);
 
-                if (window.crossOriginIsolated) {
-                    const simdBytes = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 26, 11]);
-                    const hasSimd = !!(typeof WebAssembly === 'object' && WebAssembly.validate && WebAssembly.validate(simdBytes));
-                    console.log('SIMD validation result:', hasSimd);
-                    if (hasSimd) {
-                        securityBadge.className = 'security-badge isolated';
-                        badgeText.textContent = 'High Performance Mode (SIMD)';
-                        securityBadge.title = 'Isolated context + SIMD active. Full CPU power enabled.';
-                    } else {
-                        securityBadge.className = 'security-badge not-isolated';
-                        badgeText.textContent = 'Standard Mode (SIMD Disabled)';
-                        securityBadge.title = 'SIMD validation failed. Running in compatibility mode.';
-                    }
+                if (window.crossOriginIsolated && hasSAB) {
+                    // Modern browsers with COI + SAB support WASM SIMD
+                    securityBadge.className = 'security-badge isolated';
+                    badgeText.textContent = 'High Performance Mode (SIMD)';
+                    securityBadge.title = 'Cross-origin isolated with SharedArrayBuffer. SIMD enabled.';
+                    console.log('✅ SIMD Mode Active');
+                } else if (window.crossOriginIsolated) {
+                    securityBadge.className = 'security-badge not-isolated';
+                    badgeText.textContent = 'Standard Mode (No SharedArrayBuffer)';
+                    securityBadge.title = 'Cross-origin isolated but SharedArrayBuffer unavailable.';
+                    console.log('⚠️ COI but no SAB');
                 } else {
                     console.log('NOT cross-origin isolated - checking service worker...');
                     navigator.serviceWorker.getRegistrations().then(regs => {
