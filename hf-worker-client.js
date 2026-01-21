@@ -42,21 +42,23 @@ class HFWorkerClient {
                     false, // Override Segment Size
                     8,     // Overlap
                     0,     // Pitch Shift
-                    "/tmp/PolUVR-models/", // Model Directory (Required by backend)
-                    "output",              // Output Directory (Required by backend)
+                    "/tmp/PolUVR-models/", // Model Directory
+                    "output",              // Output Directory
                     "wav", // Output Format
                     0.9,   // Normalization
                     0,     // Amplification
                     1,     // Batch Size
-                    "NAME_(STEM)_MODEL"    // Rename Stems convention
+                    "NAME_(STEM)_MODEL"    // Rename Stems
                 ],
+                event_data: null,
+                fn_index: 5,
                 session_hash: session_hash
             };
 
             this.onStatus('Queuing separation job (GPU)...');
 
             // Using the modern Gradio /call endpoint for SSE status
-            const callUrl = `${this.spaceUrl}/gradio_api/call/5`;
+            const callUrl = `${this.spaceUrl}/gradio_api/predict`;
             const callRes = await fetch(callUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
