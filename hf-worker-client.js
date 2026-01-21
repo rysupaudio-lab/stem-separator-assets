@@ -114,7 +114,18 @@ class HFWorkerClient {
                     case 'progress':
                         if (data.progress_data && data.progress_data[0]) {
                             const prog = data.progress_data[0];
-                            this.onProgress(prog.index / prog.total, `Processing: ${prog.unit || ''}`);
+                            let percent = 0;
+
+                            // Gradio 5 often provides a normalized 'progress' field (0.0 to 1.0)
+                            if (typeof prog.progress === 'number') {
+                                percent = prog.progress;
+                            } else if (prog.index !== null && prog.total !== null && prog.total > 0) {
+                                percent = prog.index / prog.total;
+                            } else if (prog.index !== null && prog.length !== null && prog.length > 0) {
+                                percent = prog.index / prog.length;
+                            }
+
+                            this.onProgress(percent, prog.desc || `Processing: ${prog.unit || ''}`);
                         }
                         break;
 
