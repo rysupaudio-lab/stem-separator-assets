@@ -159,33 +159,67 @@ class HFWorkerClient {
 
     async processResults(data) {
         this.onStatus('Downloading results...');
+        console.log("HF RAW OUTPUT:", JSON.stringify(data, null, 2));
 
-        // Data[0] and Data[1] are typically objects with 'url' and 'orig_name'
-        const vocalsInfo = data[0];
-        const instInfo = data[1];
-
-        // Result URLs are relative to the space if not absolute
-        const getFullUrl = (info) => {
-            if (!info || !info.url) return null;
-            return info.url.startsWith('http') ? info.url : `${this.spaceUrl}/file=${info.path}`;
+        // Helper to find audio-like URLs/paths in any nested structure
+        const findAudioUrls = (obj, acc = []) => {
+            if (!obj) return acc;
+            if (typeof obj === 'string') {
+                if (obj.match(/\.(wav|mp3|flac|ogg)$/i) || obj.startsWith('/tmp/') || obj.includes('/file=')) {
+                    acc.push(obj);
+                }
+            } else if (Array.isArray(obj)) {
+                obj.forEach(item => findAudioUrls(item, acc));
+            } else if (typeof obj === 'object') {
+                if (obj.url) acc.push(obj.url);
+                else if (obj.path) acc.push(obj.path);
+                else if (obj.name) findAudioUrls(obj.name, acc);
+                else Object.values(obj).forEach(val => findAudioUrls(val, acc));
+            }
+            return acc;
         };
 
-        const vUrl = getFullUrl(vocalsInfo);
-        const iUrl = getFullUrl(instInfo);
+        const allUrls = findAudioUrls(data);
+        console.log("Found Audio URLs:", allUrls);
 
-        if (!vUrl || !iUrl) throw new Error("Could not find result URLs in HF output");
+        if (allUrls.length < 2) {
+            console.error("HF Output Data:", data);
+            throw new Error(`Could not find 2 audio results. Found: ${allUrls.length}. Check console for 'HF RAW OUTPUT'.`);
+        }
 
-        // Fetch and convert to Audio Data (Waveform) to keep system consistent
-        const [vBlob, iBlob] = await Promise.all([
-            fetch(vUrl).then(r => r.blob()),
-            fetch(iUrl).then(r => r.blob())
-        ]);
+        // Assuming first is Vocals, second is Instrumental (or vice versa, typically indices map to outputs)
+        // In most UVR spaces: 0=Vocals, 1=Instrumental
+        const vPath = allUrls[0];
+        const iPath = allUrls[1];
 
-        return {
-            vocalsBlob: vBlob,
-            instrumentalBlob: iBlob,
-            vocalsUrl: URL.createObjectURL(vBlob),
-            instrumentalUrl: URL.createObjectURL(iBlob)
+        const getFullUrl = (pathOrUrl) => {
+            if (!pathOrUrl) return null;
+            if (pathOrUrl.startsWith('http')) return pathOrUrl;
+            // Clean path if it already has /file=
+            const cleanPath = pathOrUrl.replace(`${this.spaceUrl}/gradio_api/file=`, '');
+            return `${this.spaceUrl}/gradio_api/file=${cleanPath}`;
         };
+
+        const vUrl = getFullUrl(vPath);
+        const iUrl = getFullUrl(iPath);
+
+        this.onStatus('Fetching audio blobs...');
+
+        try {
+            const [vBlob, iBlob] = await Promise.all([
+                fetch(vUrl).then(r => r.blob()),
+                fetch(iUrl).then(r => r.blob())
+            ]);
+
+            return {
+                vocalsBlob: vBlob,
+                instrumentalBlob: iBlob,
+                vocalsUrl: URL.createObjectURL(vBlob),
+                instrumentalUrl: URL.createObjectURL(iBlob)
+            };
+        } catch (e) {
+            console.error("Blob Fetch Error:", e);
+            throw new Error("Failed to download separated stems.");
+        }
     }
 }
