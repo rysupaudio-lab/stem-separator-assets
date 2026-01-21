@@ -14,7 +14,7 @@ class HFWorkerClient {
         try {
             // 1. Upload File
             this.onStatus('Uploading audio to Hugging Face...');
-            const uploadUrl = `${this.spaceUrl}/upload`;
+            const uploadUrl = `${this.spaceUrl}/gradio_api/upload`;
             const formData = new FormData();
             formData.append('files', file);
 
@@ -29,23 +29,21 @@ class HFWorkerClient {
             console.log("Uploaded to HF:", tempFilePath);
 
             // 2. Trigger Prediction (Using fn_index 5 for separation)
-            // Data structure based on Politrees space analysis:
-            // [file, model, segment_size, override, overlap, pitch, model_spec1, model_spec2, format, norm, amp, batch, model_spec3]
             const payload = {
                 data: [
-                    { path: tempFilePath },
+                    { path: tempFilePath, meta: { _type: "gradio.FileData" } },
                     modelName,
                     256,   // Segment Size
                     false, // Override Segment Size
                     8,     // Overlap
                     0,     // Pitch Shift
-                    "default",
-                    "default",
+                    "",    // Model Directory (Empty for default)
+                    "",    // Output Directory (Empty for default)
                     "wav", // Output Format
                     0.9,   // Normalization
                     0,     // Amplification
                     1,     // Batch Size
-                    "default"
+                    ""     // Rename Stems
                 ]
             };
 
