@@ -188,9 +188,9 @@ class HFWorkerClient {
         }
 
         // Assuming first is Vocals, second is Instrumental (or vice versa, typically indices map to outputs)
-        // In most UVR spaces: 0=Vocals, 1=Instrumental
-        const vPath = allUrls[0];
-        const iPath = allUrls[1];
+        // Based on user feedback, Index 1 is Vocals and Index 0 is Instrumental
+        const vPath = allUrls[1];
+        const iPath = allUrls[0];
 
         const getFullUrl = (pathOrUrl) => {
             if (!pathOrUrl) return null;
