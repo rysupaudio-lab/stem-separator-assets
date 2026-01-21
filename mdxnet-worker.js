@@ -1,7 +1,6 @@
 /**
  * MDX-Net Web Worker
  * Optimized for N_FFT=6144 (Mixed-Radix FFT: 3 * 2048)
- * Debug Version 2 - Nyquist Hunt
  */
 
 importScripts('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.all.min.js');
@@ -41,7 +40,6 @@ self.onmessage = async function (e) {
 
 function initTables() {
     if (twiddle6144) return;
-    console.log('Worker: Initializing FFT tables...');
 
     // 6144 Tables
     const N = 6144;
@@ -98,7 +96,6 @@ async function loadModel(modelUrl) {
         executionProviders: ['wasm'],
         graphOptimizationLevel: 'all'
     });
-    console.log('MDX-Net model loaded in worker');
 }
 
 async function separate(leftChannel, rightChannel) {
@@ -106,20 +103,9 @@ async function separate(leftChannel, rightChannel) {
     const { N_FFT, CHUNK_SIZE, OVERLAP, DIM_F, DIM_C } = MDX_CONSTANTS;
     const numSamples = leftChannel.length;
 
-    self.postMessage({ type: 'status', message: 'Computing STFT (6144-point)...' });
-    const stftLeft = stft6144(leftChannel, 'LEFT');
-    const stftRight = stft6144(rightChannel, 'RIGHT');
-
-    // Validate STFT
-    let hasNaN = false;
-    for (let i = 0; i < stftLeft.real.length; i++) {
-        if (isNaN(stftLeft.real[i])) {
-            hasNaN = true;
-            console.error(`Worker: NaN in STFT Left at index ${i}`);
-            break;
-        }
-    }
-    if (!hasNaN) console.log("Worker: STFT Left seems clean.");
+    self.postMessage({ type: 'status', message: 'Computing STFT...' });
+    const stftLeft = stft6144(leftChannel);
+    const stftRight = stft6144(rightChannel);
 
     const numFrames = stftLeft.numFrames;
     const numBins = stftLeft.numBins;
@@ -131,8 +117,6 @@ async function separate(leftChannel, rightChannel) {
     const vocalImag = new Float32Array(numFrames * DIM_F * 2);
     const weights = new Float32Array(numFrames);
     const inputData = new Float32Array(1 * DIM_C * DIM_F * CHUNK_SIZE);
-
-    self.postMessage({ type: 'status', message: `Processing ${numChunks} chunks...` });
 
     for (let c = 0; c < numChunks; c++) {
         const startFrame = Math.min(c * chunkStep, Math.max(0, numFrames - CHUNK_SIZE));
@@ -163,12 +147,6 @@ async function separate(leftChannel, rightChannel) {
         const results = await session.run(feeds);
         const outputData = results[session.outputNames[0]].data;
 
-        if (c === 0) {
-            let maxOut = 0;
-            for (let i = 0; i < outputData.length; i++) maxOut = Math.max(maxOut, Math.abs(outputData[i]));
-            console.log('Worker: Max Model Output (First Chunk):', maxOut);
-        }
-
         // Accumulate
         for (let t = 0; t < actualChunkSize; t++) {
             const frameIdx = startFrame + t;
@@ -184,7 +162,9 @@ async function separate(leftChannel, rightChannel) {
             weights[frameIdx] += w;
         }
 
-        if (c % 5 === 0) self.postMessage({ type: 'progress', progress: (c + 1) / numChunks });
+        if (c % 5 === 0 || c === numChunks - 1) {
+            self.postMessage({ type: 'progress', progress: (c + 1) / numChunks });
+        }
     }
 
     // Normalize
@@ -239,7 +219,7 @@ async function separate(leftChannel, rightChannel) {
     };
 }
 
-function stft6144(signal, chanName) {
+function stft6144(signal) {
     const { N_FFT, HOP_LENGTH } = MDX_CONSTANTS;
     const numFrames = Math.ceil(signal.length / HOP_LENGTH);
     const numBins = N_FFT / 2 + 1;
@@ -254,7 +234,7 @@ function stft6144(signal, chanName) {
             frameData[i] = (idx >= 0 && idx < signal.length) ? signal[idx] * window6144[i] : 0;
         }
 
-        const { real: fReal, imag: fImag } = fft6144(frameData, frame === 0 && chanName === 'LEFT');
+        const { real: fReal, imag: fImag } = fft6144(frameData);
 
         for (let bin = 0; bin < numBins; bin++) {
             const idx = frame * numBins + bin;
@@ -301,7 +281,7 @@ function istft6144(stft, length) {
     return output;
 }
 
-function fft6144(input, debug) {
+function fft6144(input) {
     const N = 6144;
     const M = 2048;
     const x0 = new Float32Array(M);
@@ -345,23 +325,8 @@ function fft6144(input, debug) {
         const t2_re = re2 * w2_re - im2 * w2_im;
         const t2_im = re2 * w2_im + im2 * w2_re;
 
-        const resRe = re0 + t1_re + t2_re;
-        const resIm = im0 + t1_im + t2_im;
-
-        finalReal[k] = resRe;
-        finalImag[k] = resIm;
-
-        if (debug && k === 3072) {
-            console.log("Worker DEBUG k=3072 Trap:");
-            console.log("re0", re0, "im0", im0);
-            console.log("re1", re1, "im1", im1);
-            console.log("re2", re2, "im2", im2);
-            console.log("w1_re", w1_re, "w1_im", w1_im);
-            console.log("w2_re", w2_re, "w2_im", w2_im);
-            console.log("t1", t1_re, t1_im);
-            console.log("t2", t2_re, t2_im);
-            console.log("FINAL", resRe, resIm);
-        }
+        finalReal[k] = re0 + t1_re + t2_re;
+        finalImag[k] = im0 + t1_im + t2_im;
     }
     return { real: finalReal, imag: finalImag };
 }

@@ -1133,7 +1133,7 @@
                         const progPct = data.progress * 100;
                         vocalsProgressFill.style.width = progPct + '%';
                         vocalsProgressPercent.textContent = Math.round(progPct) + '%';
-                        updateVocalsStatus(`Separating: chunk ${data.current}/${data.total}`);
+                        updateVocalsStatus(`Separating: ${Math.round(progPct)}%`);
                         break;
                     case 'complete':
                         if (mdxWorker._separateResolve) mdxWorker._separateResolve(data.result);
