@@ -1045,7 +1045,7 @@
 
                     // Initialize worker if needed
                     if (!mdxWorker) {
-                        mdxWorker = new Worker('mdxnet-worker.js');
+                        mdxWorker = new Worker('mdxnet-worker.js?v=' + Date.now());
                         
                         // Set up message handler
                         mdxWorker.onmessage = handleWorkerMessage;
