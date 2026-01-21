@@ -954,7 +954,7 @@
             }
 
             // ==================== VOCALS TAB ====================
-            const MDXNET_MODEL_URL = 'https://huggingface.co/Eddycrack864/UVR5-MDX-NET-VIP-MODELS/resolve/main/UVR-MDX-NET_Main_438.onnx';
+            const MDXNET_MODEL_URL = 'https://huggingface.co/ModernMube/HTDemucs_onnx/resolve/main/htdemucs.onnx'; // Hybrid Transformer Demucs (~174MB)
 
             let vocalsSelectedFile = null;
             let mdxProcessor = null;
@@ -1026,7 +1026,7 @@
             // Vocals processing with Web Worker
             let mdxWorker = null;
             let mdxWorkerReady = false;
-            
+
             vocalsProcessBtn.addEventListener('click', startVocalsProcessing);
 
             async function startVocalsProcessing() {
@@ -1045,18 +1045,18 @@
 
                     // Initialize worker if needed
                     if (!mdxWorker) {
-                        mdxWorker = new Worker('mdxnet-worker.js?v=' + Date.now());
-                        
+                        mdxWorker = new Worker('htdemucs-worker.js?v=' + Date.now());
+
                         // Set up message handler
                         mdxWorker.onmessage = handleWorkerMessage;
-                        
+
                         // Load model in worker
-                        updateVocalsStatus('Loading MDX-Net model (67MB)...');
+                        updateVocalsStatus('Loading HTDemucs model (~174MB)...');
                         await new Promise((resolve, reject) => {
                             mdxWorker._loadResolve = resolve;
                             mdxWorker._loadReject = reject;
-                            mdxWorker.postMessage({ 
-                                type: 'loadModel', 
+                            mdxWorker.postMessage({
+                                type: 'loadModel',
                                 data: { modelUrl: MDXNET_MODEL_URL }
                             });
                         });
@@ -1065,16 +1065,16 @@
 
                     vocalsProgressFill.style.width = '0%';
                     updateVocalsStatus('Extracting vocals (this may take a moment)...');
-                    
+
                     // Run separation in worker
                     const result = await new Promise((resolve, reject) => {
                         mdxWorker._separateResolve = resolve;
                         mdxWorker._separateReject = reject;
                         mdxWorker.postMessage({
                             type: 'separate',
-                            data: { 
-                                left: Array.from(audioData.left), 
-                                right: Array.from(audioData.right) 
+                            data: {
+                                left: Array.from(audioData.left),
+                                right: Array.from(audioData.right)
                             }
                         });
                     });
@@ -1112,10 +1112,10 @@
                     vocalsBtnText.textContent = 'Try Again';
                 }
             }
-            
+
             function handleWorkerMessage(e) {
                 const { type, ...data } = e.data;
-                
+
                 switch (type) {
                     case 'modelLoaded':
                         if (mdxWorker._loadResolve) mdxWorker._loadResolve();
