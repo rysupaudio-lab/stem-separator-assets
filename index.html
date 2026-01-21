@@ -498,6 +498,62 @@
             height: 32px;
             border-radius: 6px;
         }
+
+        /* AI Status Display */
+        .ai-status-display {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            padding: 16px;
+            margin-bottom: 24px;
+            background: rgba(74, 222, 128, 0.1);
+            border: 1px solid rgba(74, 222, 128, 0.2);
+            border-radius: 12px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .ai-icon {
+            font-size: 20px;
+        }
+
+        .ai-text {
+            font-size: 14px;
+            color: #fff;
+        }
+
+        .ai-text strong {
+            color: #4ade80;
+        }
+
+        .ai-pulse {
+            position: absolute;
+            right: 20px;
+            width: 8px;
+            height: 8px;
+            background: #4ade80;
+            border-radius: 50%;
+            box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.7);
+            animation: pulse-green 2s infinite;
+        }
+
+        @keyframes pulse-green {
+            0% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.7);
+            }
+
+            70% {
+                transform: scale(1);
+                box-shadow: 0 0 0 10px rgba(74, 222, 128, 0);
+            }
+
+            100% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(74, 222, 128, 0);
+            }
+        }
     </style>
 </head>
 
@@ -531,12 +587,10 @@
 
             <!-- Splitter Tab -->
             <div class="tab-content active" id="splitter-content">
-                <div class="model-selector">
-                    <label>AI Model</label>
-                    <select id="modelSelect">
-                        <option value="hf-roformer">Mel-Roformer (Pro AI - HF GPU)</option>
-                        <option value="demucs">HTDemucs (Balanced - Client GPU)</option>
-                    </select>
+                <div class="ai-status-display">
+                    <span class="ai-icon">⚡</span>
+                    <span class="ai-text">Powered by <strong>HTDemucs</strong> (Client-Side GPU)</span>
+                    <div class="ai-pulse"></div>
                 </div>
 
                 <div class="upload-area" id="uploadArea">
@@ -621,12 +675,11 @@
 
             <!-- Vocals Tab -->
             <div class="tab-content" id="vocals-content">
-                <div class="model-selector">
-                    <label>AI Model</label>
-                    <select id="vocalsModelSelect">
-                        <option value="mel-roformer">Mel-Roformer (Pro AI - Kim)</option>
-                        <option value="htdemucs">HTDemucs (Balanced AI)</option>
-                    </select>
+                <div class="ai-status-display"
+                    style="background: rgba(240, 147, 251, 0.1); border-color: rgba(240, 147, 251, 0.2);">
+                    <span class="ai-icon">🧠</span>
+                    <span class="ai-text">Powered by <strong>Mel-Roformer</strong> (Pro AI Worker)</span>
+                    <div class="ai-pulse" style="box-shadow: 0 0 0 0 rgba(240, 147, 251, 0.7);"></div>
                 </div>
 
                 <div class="upload-area" id="vocalsUploadArea">
@@ -692,6 +745,216 @@
                 </div>
             </div>
 
+            <!-- ... (De-Reverb content remains) ... -->
+
+            <!-- ... (JS area) ... -->
+
+            async function startProcessing() {
+            if (!selectedFile) return;
+            processBtn.disabled = true;
+            btnText.innerHTML = '<div class="spinner"></div> Processing...';
+            progressSection.classList.add('visible');
+            progressFill.style.width = '0%';
+            progressPercent.textContent = '0%';
+
+            try {
+            updateStatus('Decoding audio...');
+            const audioData = await decodeAudioFile(selectedFile);
+
+            if (audioData.duration > 600) throw new Error('Song too long (max 10 min)');
+
+            // FORCED HTDEMUCS Logic for Splitter Tab
+            if (!processor) {
+            updateStatus('Downloading AI model (172MB)...');
+            processor = new DemucsProcessor({
+            ort: ort,
+            onDownloadProgress: (loaded, total) => {
+            const pct = (loaded / total) * 100;
+            progressFill.style.width = pct + '%';
+            progressPercent.textContent = Math.round(pct) + '%';
+            updateStatus(`Downloading: ${(loaded / 1024 / 1024).toFixed(1)}MB / ${(total / 1024 / 1024).toFixed(1)}MB`);
+            },
+            onProgress: (info) => {
+            const pct = info.progress * 100;
+            progressFill.style.width = pct + '%';
+            progressPercent.textContent = Math.round(pct) + '%';
+            updateStatus(`Separating: segment ${info.currentSegment}/${info.totalSegments}`);
+            }
+            });
+            await processor.loadModel(MODEL_URL);
+            }
+
+            progressFill.style.width = '0%';
+            updateStatus('Separating stems...');
+            const result = await processor.separate(audioData.left, audioData.right);
+
+            stems = {
+            drums: { ...result.drums, sampleRate: 44100 },
+            bass: { ...result.bass, sampleRate: 44100 },
+            vocals: { ...result.vocals, sampleRate: 44100 },
+            other: { ...result.other, sampleRate: 44100 }
+            };
+
+            // Create WaveSurfer players for Splitter
+            Object.entries(stems).forEach(([name, data]) => {
+            const blob = createWavBlob(data.left, data.right, 44100);
+            stemUrls[name] = URL.createObjectURL(blob);
+
+            const playerDiv = document.getElementById(`player-${name}`);
+            if (playerDiv) {
+            playerDiv.innerHTML = '';
+            playerDiv.classList.add('visible');
+
+            if (wavesurfers[name]) wavesurfers[name].destroy();
+
+            const ws = WaveSurfer.create({
+            container: playerDiv,
+            waveColor: '#4ade80', // Greenish for Splitter
+            progressColor: '#f093fb', // Pinkish
+            url: stemUrls[name],
+            height: 48,
+            barWidth: 2,
+            barGap: 1,
+            barRadius: 2,
+            cursorColor: '#fff',
+            responsive: true
+            });
+
+            ws.on('finish', () => {
+            const btn = document.querySelector(`.stem-btn.play[data-stem="${name}"]`);
+            if(btn) btn.textContent = '▶';
+            });
+
+            ws.on('play', () => {
+            const btn = document.querySelector(`.stem-btn.play[data-stem="${name}"]`);
+            if(btn) btn.textContent = '⏸';
+            });
+
+            ws.on('pause', () => {
+            const btn = document.querySelector(`.stem-btn.play[data-stem="${name}"]`);
+            if(btn) btn.textContent = '▶';
+            });
+
+            wavesurfers[name] = ws;
+            }
+            });
+
+            updateStatus('Complete!');
+            progressFill.style.width = '100%';
+            progressPercent.textContent = '100%';
+
+            setTimeout(() => {
+            progressSection.classList.remove('visible');
+            stemsSection.classList.add('visible');
+            processBtn.disabled = false;
+            btnText.textContent = 'Separate Another';
+            }, 1000);
+
+            } catch (err) {
+            console.error(err);
+            updateStatus('Error: ' + err.message);
+            processBtn.disabled = false;
+            btnText.textContent = 'Try Again';
+            }
+            }
+
+            // ... (keep updateStatus, decodeAudioFile, etc. unchanged)
+
+            // Play buttons UPDATE (handle both types now in one generic handler or keep previous unified one)
+            // (Previous Play Button handler already supported generic logic if `wavesurfers[name]` existed, so we are
+            good)
+
+            // ...
+
+            async function startVocalsProcessing() {
+            if (!vocalsSelectedFile) return;
+            vocalsProcessBtn.disabled = true;
+            vocalsBtnText.innerHTML = '<div class="spinner"></div> Processing...';
+            vocalsProgressSection.classList.add('visible');
+            vocalsProgressFill.style.width = '0%';
+            vocalsProgressPercent.textContent = '0%';
+
+            try {
+            // FORCED MEL-ROFORMER for Vocals Tab (No dropdown check)
+
+            updateVocalsStatus('Initializing connection to HF Worker...');
+            const results = await hfClient.separate(vocalsSelectedFile);
+
+            // results contains blobs and local URLs
+            vocalsStemUrls = {
+            'vocals-vocal': results.vocalsUrl,
+            'vocals-inst': results.instrumentalUrl
+            };
+
+            // Store for zip creation (we use blobs here for ZIP)
+            vocalsStems = {
+            'vocals-vocal': results.vocalsBlob,
+            'vocals-inst': results.instrumentalBlob
+            };
+
+            // Create WaveSurfer players
+            Object.entries(vocalsStemUrls).forEach(([name, url]) => {
+            const playerDiv = document.getElementById(`player-${name}`);
+            if (playerDiv) {
+            playerDiv.innerHTML = ''; // Clear previous
+            playerDiv.classList.add('visible'); // Show container immediately
+
+            // Destroy old instance if exists
+            if (wavesurfers[name]) {
+            wavesurfers[name].destroy();
+            }
+
+            const ws = WaveSurfer.create({
+            container: playerDiv,
+            waveColor: '#f093fb', // Pinkish purple
+            progressColor: '#4ade80', // Green
+            url: url,
+            height: 48,
+            barWidth: 2,
+            barGap: 1,
+            barRadius: 2,
+            cursorColor: '#fff',
+            responsive: true
+            });
+
+            ws.on('finish', () => {
+            const btn = document.querySelector(`.stem-btn.play[data-stem="${name}"]`);
+            if(btn) btn.textContent = '▶';
+            });
+
+            ws.on('play', () => {
+            const btn = document.querySelector(`.stem-btn.play[data-stem="${name}"]`);
+            if(btn) btn.textContent = '⏸';
+            });
+
+            ws.on('pause', () => {
+            const btn = document.querySelector(`.stem-btn.play[data-stem="${name}"]`);
+            if(btn) btn.textContent = '▶';
+            });
+
+            wavesurfers[name] = ws;
+            }
+            });
+
+            updateVocalsStatus('Complete!');
+            vocalsProgressFill.style.width = '100%';
+            vocalsProgressPercent.textContent = '100%';
+
+            setTimeout(() => {
+            vocalsProgressSection.classList.remove('visible');
+            vocalsStemsSection.classList.add('visible');
+            vocalsProcessBtn.disabled = false;
+            vocalsBtnText.textContent = 'Extract Again';
+            }, 1000);
+
+            } catch (err) {
+            console.error(err);
+            updateVocalsStatus('Error: ' + err.message);
+            vocalsProcessBtn.disabled = false;
+            vocalsBtnText.textContent = 'Try Again';
+            }
+            }
+
             <!-- De-Reverb Tab -->
             <div class="tab-content" id="dereverb-content">
                 <div style="text-align: center; padding: 40px 20px; color: #94a3b8;">
@@ -709,6 +972,7 @@
     </div>
 
     <!-- Scripts -->
+    <script src="https://unpkg.com/wavesurfer.js@7"></script>
     <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/ort.all.min.js"></script>
     <script src="demucs-web.js"></script>
     <script src="hf-worker-client.js"></script>
@@ -1054,6 +1318,52 @@
                 vocalsProgressLabel.textContent = 'Processing...';
             }
 
+            let wavesurfers = {}; // Store WaveSurfer instances
+
+            // Play buttons
+            document.querySelectorAll('.stem-btn.play').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const name = btn.dataset.stem;
+
+                    // Specific logic for Vocals tab WaveSurfers
+                    if (name.includes('vocals-')) {
+                        const ws = wavesurfers[name];
+                        if (ws) {
+                            ws.playPause();
+                        }
+                        return;
+                    }
+
+                    // Legacy logic for Splitter tab
+                    const playerDiv = document.getElementById(`player-${name}`);
+                    playerDiv.classList.toggle('visible');
+                });
+            });
+
+            // Download buttons
+            document.querySelectorAll('.stem-btn.download').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const name = btn.dataset.stem;
+                    let url = null;
+                    let baseName = 'track';
+
+                    // Check which tab/context we are in
+                    if (stemUrls[name]) {
+                        url = stemUrls[name];
+                        baseName = selectedFile ? selectedFile.name.replace(/\.[^/.]+$/, '') : 'track';
+                    } else if (vocalsStemUrls[name]) {
+                        url = vocalsStemUrls[name];
+                        baseName = vocalsSelectedFile ? vocalsSelectedFile.name.replace(/\.[^/.]+$/, '') : 'track';
+                    }
+
+                    if (url) {
+                        downloadUrl(url, `${baseName}_${name}.wav`);
+                    }
+                });
+            });
+
+            // ... (previous downloadAll handler) ...
+
             // Vocals processing with Hugging Face Worker
             const hfClient = new HFWorkerClient({
                 onStatus: (msg) => updateVocalsStatus(msg),
@@ -1094,19 +1404,56 @@
                             'vocals-inst': results.instrumentalBlob
                         };
 
-                        // Create audio players
+                        // Create WaveSurfer players
                         Object.entries(vocalsStemUrls).forEach(([name, url]) => {
                             const playerDiv = document.getElementById(`player-${name}`);
                             if (playerDiv) {
-                                playerDiv.innerHTML = `<audio controls src="${url}"></audio>`;
+                                playerDiv.innerHTML = ''; // Clear previous
+                                playerDiv.classList.add('visible'); // Show container immediately
+
+                                // Destroy old instance if exists
+                                if (wavesurfers[name]) {
+                                    wavesurfers[name].destroy();
+                                }
+
+                                const ws = WaveSurfer.create({
+                                    container: playerDiv,
+                                    waveColor: '#f093fb', // Pinkish purple
+                                    progressColor: '#4ade80', // Green
+                                    url: url,
+                                    height: 48,
+                                    barWidth: 2,
+                                    barGap: 1,
+                                    barRadius: 2,
+                                    cursorColor: '#fff',
+                                    responsive: true
+                                });
+
+                                ws.on('finish', () => {
+                                    const btn = document.querySelector(`.stem-btn.play[data-stem="${name}"]`);
+                                    if (btn) btn.textContent = '▶';
+                                });
+
+                                ws.on('play', () => {
+                                    const btn = document.querySelector(`.stem-btn.play[data-stem="${name}"]`);
+                                    if (btn) btn.textContent = '⏸';
+                                });
+
+                                ws.on('pause', () => {
+                                    const btn = document.querySelector(`.stem-btn.play[data-stem="${name}"]`);
+                                    if (btn) btn.textContent = '▶';
+                                });
+
+                                wavesurfers[name] = ws;
                             }
                         });
+
+
                     } else {
                         // FALLBACK TO CLIENT-SIDE HTDEMUCS IF SELECTED
                         updateVocalsStatus('Decoding audio for local processing...');
                         const audioData = await decodeAudioFile(vocalsSelectedFile);
                         if (audioData.duration > 600) throw new Error('Song too long (max 10 min)');
-
                         if (!mdxWorker) {
                             mdxWorker = new Worker('htdemucs-worker.js?v=' + Date.now());
                             mdxWorker.onmessage = handleWorkerMessage;
@@ -1117,7 +1464,6 @@
                                 mdxWorker.postMessage({ type: 'loadModel', data: { modelUrl: 'https://huggingface.co/ModernMube/HTDemucs_onnx/resolve/main/htdemucs.onnx' } });
                             });
                         }
-
                         const result = await new Promise((resolve, reject) => {
                             mdxWorker._separateResolve = resolve;
                             mdxWorker._separateReject = reject;
@@ -1126,12 +1472,45 @@
                                 data: { left: Array.from(audioData.left), right: Array.from(audioData.right) }
                             });
                         });
-
                         vocalsStemUrls['vocals-vocal'] = URL.createObjectURL(createWavBlob(new Float32Array(result.vocals.left), new Float32Array(result.vocals.right), 44100));
                         vocalsStemUrls['vocals-inst'] = URL.createObjectURL(createWavBlob(new Float32Array(result.instrumental.left), new Float32Array(result.instrumental.right), 44100));
 
                         Object.entries(vocalsStemUrls).forEach(([name, url]) => {
-                            document.getElementById(`player-${name}`).innerHTML = `<audio controls src="${url}"></audio>`;
+                            const playerDiv = document.getElementById(`player-${name}`);
+                            if (playerDiv) {
+                                playerDiv.innerHTML = '';
+                                playerDiv.classList.add('visible');
+
+                                if (wavesurfers[name]) wavesurfers[name].destroy();
+
+                                const ws = WaveSurfer.create({
+                                    container: playerDiv,
+                                    waveColor: '#a78bfa',
+                                    progressColor: '#4ade80',
+                                    url: url,
+                                    height: 48,
+                                    barWidth: 2,
+                                    barGap: 1,
+                                    barRadius: 2
+                                });
+
+                                ws.on('finish', () => {
+                                    const btn = document.querySelector(`.stem-btn.play[data-stem="${name}"]`);
+                                    if (btn) btn.textContent = '▶';
+                                });
+
+                                ws.on('play', () => {
+                                    const btn = document.querySelector(`.stem-btn.play[data-stem="${name}"]`);
+                                    if (btn) btn.textContent = '⏸';
+                                });
+
+                                ws.on('pause', () => {
+                                    const btn = document.querySelector(`.stem-btn.play[data-stem="${name}"]`);
+                                    if (btn) btn.textContent = '▶';
+                                });
+
+                                wavesurfers[name] = ws;
+                            }
                         });
                     }
 
