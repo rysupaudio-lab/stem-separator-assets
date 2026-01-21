@@ -31,19 +31,23 @@ class HFWorkerClient {
             // 2. Trigger Prediction (Using fn_index 5 for separation)
             const payload = {
                 data: [
-                    { path: tempFilePath, meta: { _type: "gradio.FileData" } },
+                    {
+                        path: tempFilePath,
+                        orig_name: file.name,
+                        meta: { _type: "gradio.FileData" }
+                    },
                     modelName,
                     256,   // Segment Size
                     false, // Override Segment Size
                     8,     // Overlap
                     0,     // Pitch Shift
-                    "",    // Model Directory (Empty for default)
-                    "",    // Output Directory (Empty for default)
+                    "/tmp/PolUVR-models/", // Model Directory (Required by backend)
+                    "output",              // Output Directory (Required by backend)
                     "wav", // Output Format
                     0.9,   // Normalization
                     0,     // Amplification
                     1,     // Batch Size
-                    ""     // Rename Stems
+                    "NAME_(STEM)_MODEL"    // Rename Stems convention
                 ]
             };
 
