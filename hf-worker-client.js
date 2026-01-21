@@ -29,6 +29,7 @@ class HFWorkerClient {
             console.log("Uploaded to HF:", tempFilePath);
 
             // 2. Trigger Prediction (Using fn_index 5 for separation)
+            const session_hash = Math.random().toString(36).substring(2, 12);
             const payload = {
                 data: [
                     {
@@ -48,7 +49,8 @@ class HFWorkerClient {
                     0,     // Amplification
                     1,     // Batch Size
                     "NAME_(STEM)_MODEL"    // Rename Stems convention
-                ]
+                ],
+                session_hash: session_hash
             };
 
             this.onStatus('Queuing separation job (GPU)...');
@@ -61,7 +63,11 @@ class HFWorkerClient {
                 body: JSON.stringify(payload)
             });
 
-            if (!callRes.ok) throw new Error(`Trigger failed: ${callRes.statusText}`);
+            if (!callRes.ok) {
+                const errorText = await callRes.text();
+                console.error("HF Trigger Error Body:", errorText);
+                throw new Error(`Trigger failed (${callRes.status}): ${errorText || callRes.statusText}`);
+            }
             const { event_id } = await callRes.json();
             console.log("Job Event ID:", event_id);
 
