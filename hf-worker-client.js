@@ -25,56 +25,60 @@ class HFWorkerClient {
 
             if (!uploadRes.ok) throw new Error(`Upload failed: ${uploadRes.statusText}`);
             const uploadData = await uploadRes.json();
-            const tempFilePath = uploadData[0]; // HF returns an array of paths
+            const tempFilePath = uploadData[0];
             console.log("Uploaded to HF:", tempFilePath);
 
-            // 2. Trigger Prediction (Using fn_index 5 for separation)
+            // 2. Queue Join (The modern way for long-running GPU tasks)
             const session_hash = Math.random().toString(36).substring(2, 12);
+
+            // Replicate the exact FileData structure seen in production sniff
+            const hfFileObj = {
+                path: tempFilePath,
+                orig_name: file.name,
+                size: file.size,
+                mime_type: file.type || "audio/wav",
+                meta: { _type: "gradio.FileData" },
+                url: `${this.spaceUrl}/gradio_api/file=${tempFilePath}`
+            };
+
             const payload = {
                 data: [
-                    {
-                        path: tempFilePath,
-                        orig_name: file.name,
-                        meta: { _type: "gradio.FileData" }
-                    },
+                    hfFileObj,
                     modelName,
                     256,   // Segment Size
                     false, // Override Segment Size
                     8,     // Overlap
                     0,     // Pitch Shift
-                    "/tmp/PolUVR-models/", // Model Directory
-                    "output",              // Output Directory
+                    "/tmp/PolUVR-models/",
+                    "output",
                     "wav", // Output Format
-                    0.9,   // Normalization
-                    0,     // Amplification
-                    1,     // Batch Size
-                    "NAME_(STEM)_MODEL"    // Rename Stems
+                    0.9,
+                    0,
+                    1,
+                    "NAME_(STEM)_MODEL"
                 ],
                 event_data: null,
                 fn_index: 5,
-                session_hash: session_hash
+                session_hash: session_hash,
+                trigger_id: 28 // Essential: Tells the server which 'button' we clicked
             };
 
-            this.onStatus('Queuing separation job (GPU)...');
+            this.onStatus('Joining processing queue...');
 
-            // Using the modern Gradio /call endpoint for SSE status
-            const callUrl = `${this.spaceUrl}/gradio_api/predict`;
-            const callRes = await fetch(callUrl, {
+            const joinUrl = `${this.spaceUrl}/gradio_api/queue/join`;
+            const joinRes = await fetch(joinUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
 
-            if (!callRes.ok) {
-                const errorText = await callRes.text();
-                console.error("HF Trigger Error Body:", errorText);
-                throw new Error(`Trigger failed (${callRes.status}): ${errorText || callRes.statusText}`);
+            if (!joinRes.ok) {
+                const errorText = await joinRes.text();
+                throw new Error(`Queue join failed (${joinRes.status}): ${errorText}`);
             }
-            const { event_id } = await callRes.json();
-            console.log("Job Event ID:", event_id);
 
-            // 3. Poll for Completion (SSE style)
-            return await this.pollStatus(event_id);
+            // 3. Poll for Completion via SSE
+            return await this.pollQueueStatus(session_hash);
 
         } catch (err) {
             console.error("HF Worker Error:", err);
@@ -82,49 +86,62 @@ class HFWorkerClient {
         }
     }
 
-    async pollStatus(eventId) {
+    async pollQueueStatus(session_hash) {
         return new Promise((resolve, reject) => {
-            const statusUrl = `${this.spaceUrl}/gradio_api/call/5/${eventId}`;
+            const statusUrl = `${this.spaceUrl}/gradio_api/queue/data?session_hash=${session_hash}`;
             const eventSource = new EventSource(statusUrl);
 
             eventSource.onmessage = async (event) => {
                 const data = JSON.parse(event.data);
-                console.log("HF Event:", data.msg, data);
+                console.log("HF Queue Event:", data.msg, data);
 
                 switch (data.msg) {
+                    case 'send_hash':
+                        // Handshake msg, usually ignored if we sent it in URL
+                        break;
+
+                    case 'queue_full':
+                        eventSource.close();
+                        reject(new Error("Hugging Face queue is currently full. Try again in a minute."));
+                        break;
+
+                    case 'estimation':
+                        if (data.rank !== undefined) {
+                            this.onStatus(`Waiting in queue (Rank: ${data.rank + 1})...`);
+                        }
+                        break;
+
                     case 'progress':
                         if (data.progress_data && data.progress_data[0]) {
                             const prog = data.progress_data[0];
                             this.onProgress(prog.index / prog.total, `Processing: ${prog.unit || ''}`);
                         }
                         break;
-                    case 'process_started':
-                        this.onStatus('Separation started on T4 GPU...');
+
+                    case 'process_generating':
+                        this.onStatus('Separating stems on GPU...');
                         break;
+
                     case 'process_completed':
                         eventSource.close();
                         if (data.success) {
                             const results = data.output.data;
-                            // Index 0: Vocals File Info
-                            // Index 1: Instrumental File Info
-                            // Index 2: Message/Log
                             resolve(await this.processResults(results));
                         } else {
                             reject(new Error("HF Processing failed: " + (data.output.error || "Unknown error")));
                         }
                         break;
+
                     case 'heartbeat':
-                        break;
-                    case 'error':
-                        eventSource.close();
-                        reject(new Error("HF Stream Error: " + data.error));
+                        // Just keep the connection alive
                         break;
                 }
             };
 
             eventSource.onerror = (err) => {
+                console.error("SSE Error:", err);
                 eventSource.close();
-                reject(new Error("HF Connection interrupted"));
+                reject(new Error("Connection to HF Worker lost."));
             };
         });
     }
