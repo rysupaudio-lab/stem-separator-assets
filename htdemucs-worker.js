@@ -34,14 +34,19 @@ self.onmessage = async function (e) {
         }
     } catch (err) {
         console.error("Worker Error:", err);
-        self.postMessage({ type: 'error', error: err.message });
+        const errorMsg = err instanceof Error ? err.message : (typeof err === 'string' ? err : JSON.stringify(err));
+        self.postMessage({ type: 'error', error: errorMsg });
     }
 };
 
 async function loadModel(modelUrl) {
     self.postMessage({ type: 'status', message: 'Downloading HTDemucs model (174MB)...' });
 
-    // Check for cached model to avoid re-downloading if possible, though browser cache handles most
+    // Configure ONNX Runtime to use CDN for WASM assets to avoid 404s on GitHub Pages
+    ort.env.wasm.numThreads = navigator.hardwareConcurrency || 4;
+    ort.env.wasm.simd = true;
+    ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/';
+
     const response = await fetch(modelUrl);
     const contentLength = parseInt(response.headers.get('Content-Length') || '0');
 
@@ -78,7 +83,9 @@ async function loadModel(modelUrl) {
         console.log("Model Loaded. Inputs:", session.inputNames, "Outputs:", session.outputNames);
 
     } catch (e) {
-        throw new Error(`Failed to create ONNX session: ${e.message}`);
+        console.error("ORT Session Error:", e);
+        const errorMsg = e instanceof Error ? e.message : (typeof e === 'string' ? e : JSON.stringify(e));
+        throw new Error(`Failed to create ONNX session: ${errorMsg}`);
     }
 }
 
